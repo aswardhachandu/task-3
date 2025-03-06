@@ -1,0 +1,150 @@
+import cv2 
+import numpy as np 
+import os 
+from tensorflow.keras.models import load_model 
+from tensorflow.keras.preprocessing import image 
+ 
+class FaceRecognition: 
+    def __init__(self, face_detector_type="dnn", 
+recognition_model_path=None, known_faces_dir=None): 
+        """ 
+        Initializes the FaceRecognition class. 
+ 
+        Args: 
+            face_detector_type (str): "haar" or "dnn" (default: 
+"dnn"). 
+            recognition_model_path (str): Path to the face recognition 
+model (optional). 
+            known_faces_dir (str): Path to directory containing known 
+faces (optional). 
+        """ 
+        self.face_detector_type = face_detector_type 
+        self.recognition_model_path = recognition_model_path 
+        self.known_faces_dir = known_faces_dir 
+        self.face_detector = self._load_face_detector() 
+        self.recognition_model = self._load_recognition_model() 
+        self.known_faces = self._load_known_faces() 
+ 
+    def _load_face_detector(self): 
+        if self.face_detector_type == "haar": 
+            return cv2.CascadeClassifier(cv2.data.haarcascades + 
+'haarcascade_frontalface_default.xml') 
+        elif self.face_detector_type == "dnn": 
+            model_file = "res10_300x300_ssd_iter_140000.caffemodel" 
+            config_file = "deploy.prototxt.txt" 
+            return cv2.dnn.readNetFromCaffe(config_file, model_file) 
+        else: 
+            raise ValueError("Invalid face detector type. Choose 
+'haar' or 'dnn'.") 
+ 
+    def _load_recognition_model(self): 
+        if self.recognition_model_path: 
+            return load_model(self.recognition_model_path) 
+        return None 
+ 
+    def _load_known_faces(self): 
+        if self.known_faces_dir and self.recognition_model: 
+            known_faces = {} 
+            for filename in os.listdir(self.known_faces_dir): 
+                if filename.lower().endswith(('.png', '.jpg', 
+'.jpeg')): 
+                    filepath = os.path.join(self.known_faces_dir, 
+filename) 
+                    img = image.load_img(filepath, target_size=(160, 
+160)) # Adapt to your model's input size 
+                    img_array = image.img_to_array(img) 
+                    img_array = np.expand_dims(img_array, axis=0) 
+                    embedding = 
+self.recognition_model.predict(img_array) 
+                    name = os.path.splitext(filename)[0] 
+                    known_faces[name] = embedding 
+            return known_faces 
+        return {} 
+ 
+    def detect_faces(self, frame): 
+        """Detects faces in a frame.""" 
+        if self.face_detector_type == "haar": 
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) 
+            faces = self.face_detector.detectMultiScale(gray, 
+scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)) 
+            return [(x, y, x + w, y + h) for (x, y, w, h) in faces] 
+        elif self.face_detector_type == "dnn": 
+            (h, w) = frame.shape[:2] 
+            blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 
+300)), 1.0, (300, 300), (104.0, 177.0, 123.0)) 
+            self.face_detector.setInput(blob) 
+            detections = self.face_detector.forward() 
+            faces = [] 
+            for i in range(0, detections.shape[2]): 
+                confidence = detections[0, 0, i, 2] 
+                if confidence > 0.5:  # Adjust confidence threshold 
+                    box = detections[0, 0, i, 3:7] * np.array([w, h, 
+w, h]) 
+                    (startX, startY, endX, endY) = box.astype("int") 
+                    faces.append((startX, startY, endX, endY)) 
+            return faces 
+        else: 
+            return [] 
+ 
+    def recognize_faces(self, frame, faces): 
+        """Recognizes faces in a frame.""" 
+        if not self.recognition_model or not self.known_faces: 
+            return [None] * len(faces) 
+ 
+        recognized_names = [] 
+        for (startX, startY, endX, endY) in faces: 
+            face_img = frame[startY:endY, startX:endX] 
+            face_img = cv2.resize(face_img, (160, 160)) # Adapt to 
+your model's input size 
+            face_img = image.img_to_array(face_img) 
+            face_img = np.expand_dims(face_img, axis=0) 
+            embedding = self.recognition_model.predict(face_img) 
+ 
+            min_dist = float('inf') 
+            recognized_name = "Unknown" 
+            for name, known_embedding in self.known_faces.items(): 
+                dist = np.linalg.norm(embedding - known_embedding) 
+                if dist < min_dist: 
+                    min_dist = dist 
+                    recognized_name = name 
+ 
+            if min_dist > 1.0: # Adjust distance threshold 
+                recognized_name = "Unknown" 
+ 
+            recognized_names.append(recognized_name) 
+        return recognized_names 
+ 
+    def process_frame(self, frame): 
+        """Detects and recognizes faces in a frame, and draws bounding 
+boxes and names.""" 
+        faces = self.detect_faces(frame) 
+        names = self.recognize_faces(frame, faces) 
+ 
+        for i, (startX, startY, endX, endY) in enumerate(faces): 
+            cv2.rectangle(frame, (startX, startY), (endX, endY), (0, 
+255, 0), 2) 
+            cv2.putText(frame, names[i], (startX, startY - 10), 
+cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2) 
+        return frame 
+ 
+# Example Usage: 
+face_recognizer = FaceRecognition(face_detector_type="dnn", 
+                                  
+recognition_model_path="path/to/your/recognition_model.h5", #replace 
+with your model 
+                                  
+known_faces_dir="path/to/your/known_faces") #replace with your 
+directory 
+ 
+cap = cv2.VideoCapture(0) # 0 for webcam 
+while True: 
+    ret, frame = cap.read() 
+    if not ret: 
+        break 
+ 
+processed_frame = face_recognizer.process_frame(frame) 
+cv2.imshow("Face Recognition", processed_frame) 
+if cv2.waitKey(1) & 0xFF == ord('q'): 
+break 
+cap.release() 
+cv2.destroyAllWindows() 
